@@ -332,7 +332,7 @@ class Offer(object):
 
 
     def _retitle_columns(self):
-        self.offers.rename(columns={x: x.replace('_', ' ').title()
+        self.offers.rename(columns={x: x.replace('_', ' ').title().strip()
                 for x in self.offers.columns}, inplace=True)
 
 
@@ -354,6 +354,8 @@ class Offer(object):
             left_on = "Grid Exit Point"
         elif "Grid Injection Point" in self.offers.columns:
             left_on = "Grid Injection Point"
+        elif "Grid Point" in self.offers.columns:
+            left_on = "Grid Point"
         else:
             pass
 
