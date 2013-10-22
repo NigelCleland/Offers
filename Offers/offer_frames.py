@@ -350,6 +350,14 @@ class Offer(object):
             user_map.rename(columns={"Node": "Grid Exit Point",
                 "Load Area": "Region", "Island Name": "Island"}, inplace=True)
 
+        if "Grid Exit Point" in self.offers.columns:
+            left_on = "Grid Exit Point"
+        elif "Grid Injection Point" in self.offers.columns:
+            left_on = "Grid Injection Point"
+        else:
+            pass
+
+        self._column_stripper(left_on)
         self.offers = self.offers.merge(user_map, left_on=left_on, right_on=right_on)
 
 
@@ -371,6 +379,9 @@ class Offer(object):
 
     def _sort_offers(self, datetime_col="Trading Datetime"):
         self.offers.sort(columns=[datetime_col], inplace=True)
+
+    def _column_stripper(self, column):
+        self.offers[column] = self.offers[column].apply(lambda x: x.strip())
 
 
 
@@ -611,8 +622,8 @@ class EnergyOffer(Offer):
     Is created by passing a pandas DataFrame in the standard WITS
     template and then modificiations are made from there
     """
-    def __init__(self, offers):
-        super(EnergyOffer, self).__init__(offers)
+    def __init__(self, offers, **kargs):
+        super(EnergyOffer, self).__init__(offers, **kargs)
 
 
 if __name__ == '__main__':
