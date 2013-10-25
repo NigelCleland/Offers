@@ -419,8 +419,50 @@ class PLSROffer(Offer):
     Is created by passing a pandas DataFrame in the standard WITS
     template and then modificiations are made from there
     """
-    def __init__(self, offers):
-        super(PLSROffer, self).__init__(offers)
+    def __init__(self, offers, run_operations=False):
+        super(PLSROffer, self).__init__(offers, run_operations=run_operations)
+
+    def fan_offers(self, **classifiers):
+
+        stack = self.filter_stack(return_df=True, **classifiers)
+
+    def unique_classifier(self, series):
+        return " ".join([series["Grid Point"], "".join([series["Station"], str(series["Unit"])])])
+
+
+    def _bathtub(self, stack, maximum_capacity):
+
+        energy_stack = np.arange(0, maximum_capacity, 1)
+        reserve_stack = np.zeros(len(energy_stack))
+
+        for index, row in stack.iterrows():
+            reserve = energy_stack * row["Percent"] / 100
+            rmap = np.where(reserve <= row["Max"], reserve, row["Max"])
+            reserve_stack = reserve_stack + rmap
+
+        reserve_stack = np.where(reserve_stack <= energy_stack[::-1], reserve_stack, energy_stack[::-1])
+
+        marginal_energy = energy_stack[1:] - energy_stack[:-1]
+        marginal_reserve = reserve_stack[1:] - reserve_stack[:-1]
+
+        df = pd.DataFrame(np.array([energy_stack[1:], marginal_reserve]).T, columns=["Cumulative Station Offer", "Marginal Reserve"])
+
+        df["Market Node Id"] = stack["Market Node Id"].unique()[0]
+
+        return df
+
+    def _reserve_stack(self, stack, capacity_dict):
+
+        for classifier in stack["Market Node Id"].unique():
+
+            mini_stack = stack.eq_mask("Market Node Id", classifier)
+            max_capacity = capacity_dict[classifier]
+
+            yield self._bathtub(mini_stack, max_capacity)
+
+    def marginal_reserve_stack(self, stack, capacity_dict):
+        return pd.concat(self._reserve_stack(stack, capacity_dict), ignore_index=True)
+
 
 
     def merge_stacked_offers(self, il_offer):
@@ -447,6 +489,7 @@ class ReserveOffer(Offer):
         # Note, a raw Offer frame isn't passed, therefore manually add it
         # to the offer stack
         self.offer_stack = offers
+
 
     def NRM_Clear(self, fstack=None, max_req=0, ni_min=0, si_min=0):
         """ Clear the reserve offers as though the National Reserve Market
@@ -626,6 +669,77 @@ class EnergyOffer(Offer):
     """
     def __init__(self, offers, **kargs):
         super(EnergyOffer, self).__init__(offers, **kargs)
+
+
+    def unique_classifier(self, series):
+        return " ".join([series["Grid Injection Point"], "".join([series["Station"], str(series["Unit"])])])
+
+
+    def composite_bathtub(self, plsr_offer, period=None, company=None, island=None, reserve_type=None, product_type=None):
+        """ Create a Composite Bathtub Constraint for both Energy and Reserve
+        Stacks
+
+        """
+
+        # Filter the Energy Stack
+        energy_stack = self.filter_stack(period=period, company=company, island=island, return_df=True)
+        reserve_stack = plsr_offer.filter_stack(period=period, company=company, island=island, reserve_type=reserve_type, product_type=product_type, return_df=True)
+
+        energy_stack["Market Node Id"] = energy_stack.apply(self.unique_classifier, axis=1)
+        reserve_stack["Market Node Id"] = reserve_stack.apply(plsr_offer.unique_classifier, axis=1)
+
+        energy_stack = energy_stack.gt_mask("Power", 0)
+        reserve_stack = reserve_stack.gt_mask("Max", 0)
+
+
+        capacity_dict = energy_stack.groupby("Market Node Id")["Power"].sum()
+
+        energy = self.marginal_stack(energy_stack)
+        reserve = plsr_offer.marginal_reserve_stack(reserve_stack, capacity_dict)
+
+        join_names = ["Market Node Id", "Cumulative Station Offer"]
+
+        full_stack = energy.merge(reserve, left_on=join_names, right_on=join_names, how='outer')
+
+        full_stack.fillna(0, inplace=True)
+
+        full_stack["Cumulative Reserve"] = full_stack["Marginal Reserve"].cumsum()
+
+        return full_stack
+
+    def marginal_stack(self, stack):
+        marg_stack = pd.concat(self._gen_gen(stack), ignore_index=True)
+        marg_stack.sort(columns=("Price"), inplace=True)
+        marg_stack["Cumulative Offer"] = marg_stack["Power"].cumsum()
+        return marg_stack
+
+    def _gen_gen(self, stack):
+
+        for classifier in stack["Market Node Id"].unique():
+
+            new_stack = stack.eq_mask("Market Node Id", classifier)
+            single_station = pd.concat(self._marginal_generator(new_stack), axis=1).T
+            single_station["Cumulative Station Offer"] = single_station["Power"].cumsum()
+            yield single_station.copy()
+
+    def _marginal_generator(self, stack):
+        """ Assumes a sorted energy stack with appropriate classifiers applied.
+        """
+
+        new_frame_data = []
+        for index, series in stack.iterrows():
+
+            power = series["Power"]
+            price = series["Price"]
+            mni = series["Market Node Id"]
+
+            while power > 0:
+                ser2 = series.copy()
+                ser2["Power"] = 1
+                yield ser2
+                power -= 1
+
+
 
 
 if __name__ == '__main__':
